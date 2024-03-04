@@ -23,8 +23,7 @@ import matplotlib.pyplot as plt
 import glob
 
 def inference(file_path, reference_text):
-    #subscriptionKey = "ec20182c0fe44217ae98437903f03f59"
-    subscriptionKey = '0c202f44a3c042e4931af150c72ccd78' #nic
+    subscriptionKey = 'sign up for Azure and insert your own here' 
     region = "southeastasia"
 
     # normal method
