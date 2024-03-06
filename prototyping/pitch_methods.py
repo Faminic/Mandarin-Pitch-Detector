@@ -1,5 +1,6 @@
 import math
 import librosa
+import librosa.display
 import crepe
 import tensorflow as tf
 import numpy as np
@@ -22,8 +23,10 @@ import matplotlib.pyplot as plt
 
 import glob
 
+new_sr = 16000
+
 def inference(file_path, reference_text):
-    subscriptionKey = 'sign up for Azure and insert your own here' 
+    subscriptionKey = 'sign up for azure with your NUS email and insert your key here' 
     region = "southeastasia"
 
     # normal method
@@ -61,16 +64,42 @@ def format_onset_offset(raw_dict):
     onset_times = []
     offset_times = []
     words = []
-    for word_dict in json.loads(raw_dict)['NBest'][0]['Words']:
+    if type(raw_dict) == dict:
+        loaded_dict = raw_dict
+    else:
+        loaded_dict = json.loads(raw_dict)
+
+    for word_dict in loaded_dict['NBest'][0]['Words']:
         for phoneme_dict in word_dict['Phonemes']:
             words.append(phoneme_dict['Phoneme'])
             onset_times.append(phoneme_dict['Offset']/10**7)
             offset_times.append((phoneme_dict['Offset']+phoneme_dict['Duration'])/10**7)
     return pd.DataFrame([words, onset_times, offset_times], index = ['word','onset','offset']).transpose()
 
+def get_pyin(audio_path, onset_times):
+    y, sr = librosa.load(audio_path, sr = new_sr)
+
+    times = []
+    f0 = []
+    voiced_probs = []
+
+    for character_index in range(len(onset_times)):
+        onset_time = onset_times['onset'][character_index]
+        offset_time = onset_times['offset'][character_index]
+        relevant_frames = y[int(onset_time*sr):int(offset_time*sr)]
+        f0_x, voiced_flag_x, voiced_probs_x = librosa.pyin(relevant_frames, sr=sr, fmin=40, fmax=350)
+        times_x = [x + onset_time for x in librosa.times_like(f0_x, sr = sr)]
+
+        for times_i, f0_i, voiced_probs_i in zip(times_x, f0_x, voiced_probs_x):
+            times.append(times_i)
+            f0.append(f0_i)
+            voiced_probs.append(voiced_probs_i)
+
+    return pd.DataFrame([times, f0, voiced_probs], index=['t', 'f', 'p']).transpose().dropna(axis=0).reset_index(drop=True)
+
+
 def get_harmo(audio_path, onset_times = None):
     y, sr = torchaudio.load(audio_path) # harmoF0 requires torchaudio's load
-    new_sr = 16000
     y = torchaudio.functional.resample(y, orig_freq = sr, new_freq = new_sr)
     y = torch.mean(y, axis = 0)
     harmo_pitchtracker = harmof0.PitchTracker()
@@ -246,6 +275,8 @@ def get_crepe(audio_path, onset_times = None, shortest_slice = 10):
 
 
 
+
+
 def visualise_results(audio_path, methods_dict, cutoff = 2000, filename = None):
     # generate spectrogram data
     y, sr = torchaudio.load(audio_path)
@@ -268,7 +299,7 @@ def visualise_results(audio_path, methods_dict, cutoff = 2000, filename = None):
     x_ticks = x_ticks.iloc[np.arange(0,len(spectrogram[0]), x_tick_scaling)]
       
     # prepare to plot
-    fig, ax = plt.subplots(figsize=[10,7])
+    fig, ax = plt.subplots(figsize=[15,7])
     # plot background spectrogram
     ax.imshow(spectrogram, origin='lower', aspect='auto', interpolation='nearest', cmap='viridis')
     # plot pitch curves
@@ -287,3 +318,50 @@ def visualise_results(audio_path, methods_dict, cutoff = 2000, filename = None):
     ax.set_xticks(x_ticks['locs'])
     ax.set_xticklabels(x_ticks['labels'])
     plt.show()
+
+
+
+def visualise_results_librosa(audio_path, methods_dict, onset_times, cutoff = 2000, filename = None, word_height = 50):
+    # generate spectrogram data
+    y, sr = librosa.load(audio_path)
+    n_fft = 2048
+    duration = len(y)/sr
+    spectrogram = librosa.amplitude_to_db(np.abs(librosa.stft(y)), ref=np.max)
+      
+    # prepare to plot
+    fig, ax = plt.subplots(figsize=[15,7])
+    # plot background spectrogram
+    #img = librosa.display.specshow(spectrogram, x_axis='time', y_axis='log', ax=ax, cmap='gray')
+    img = librosa.display.specshow(spectrogram, x_axis='time', y_axis='linear', ax=ax, cmap='gray')
+    # plot pitch curves
+    for method_name in methods_dict:
+        curve_data = methods_dict[method_name]
+        # need to map data...
+        mapped_freq = curve_data['f']
+        mapped_time = curve_data['t']
+        ax.scatter(mapped_time, mapped_freq, alpha = curve_data['weight'], marker = 'x', color = curve_data['colour'], s = curve_data['size'])
+        ax.scatter([], [], label = method_name, marker = 'x', color = curve_data['colour'])
+    
+    # add word demarcations
+    
+    for row_index in range(len(onset_times)):
+        display_text = onset_times['word'][row_index]
+        onset_time = onset_times['onset'][row_index]
+        offset_time = onset_times['offset'][row_index]
+        ax.axvline(x = onset_time, color = 'white', linewidth = 1)
+        ax.axvline(x = offset_time, color = 'white', linewidth = 1)
+        ax.text(x = (onset_time + offset_time)/2, y = word_height, s = display_text, color = 'white', fontsize = 'large')
+
+    # label the graph
+    ax.legend()
+    ax.set_ylim([0,cutoff])
+    ax.set_title(audio_path.replace('/', ' / '))
+
+    # save
+    if filename == None:
+        plt.show()
+    else:
+        if not os.path.exists('graph_outputs'):
+            os.mkdir('graph_outputs')
+        plt.savefig('./graph_outputs/'+filename)
+        plt.close()
